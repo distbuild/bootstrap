@@ -70,6 +70,10 @@ func run(_ context.Context) error {
 		return fmt.Errorf("download resources failed: %w", err)
 	}
 
+	if err := createSymlinks(); err != nil {
+		return fmt.Errorf("create symlinks failed: %w", err)
+	}
+
 	if err := transferAgent(); err != nil {
 		return fmt.Errorf("transfer agent failed: %w", err)
 	}
@@ -177,7 +181,20 @@ func downloadResources() error {
 }
 
 func downloadFile(url, filePath string) error {
-	resp, err := http.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("create request failed: %v [%s]", err, filepath.Base(filePath))
+	}
+
+	username := os.Getenv("DISTBUILD_AUTH_USER")
+	password := os.Getenv("DISTBUILD_AUTH_PASSWORD")
+	if username == "" || password == "" {
+		return fmt.Errorf("environment variables DISTBUILD_AUTH_USER or DISTBUILD_AUTH_PASSWORD not set [%s]", filepath.Base(filePath))
+	}
+	req.SetBasicAuth(username, password)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("download failed: %v [%s]", err, filepath.Base(filePath))
 	}
@@ -185,6 +202,10 @@ func downloadFile(url, filePath string) error {
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed with status code %d [%s]", resp.StatusCode, filepath.Base(filePath))
+	}
 
 	out, err := os.Create(filePath)
 	if err != nil {
@@ -201,6 +222,27 @@ func downloadFile(url, filePath string) error {
 
 	if err := os.Chmod(filePath, 0755); err != nil {
 		return fmt.Errorf("chmod failed: %v [%s]", err, filepath.Base(filePath))
+	}
+
+	return nil
+}
+
+func createSymlinks() error {
+	distninjaSrc := filepath.Join(distbuildPath, "boong", "bin", "distninja")
+	proxySrc := filepath.Join(distbuildPath, "boong", "bin", "proxy")
+
+	cmd := exec.Command("sudo", "ln", "-sf", distninjaSrc, "/usr/local/bin/distninja")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("distninja symlink failed: %v\n%s", err, stderr.String())
+	}
+
+	cmd = exec.Command("sudo", "ln", "-sf", proxySrc, "/usr/local/bin/proxy")
+	stderr.Reset()
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("proxy symlink failed: %v\n%s", err, stderr.String())
 	}
 
 	return nil
