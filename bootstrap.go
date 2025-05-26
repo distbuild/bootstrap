@@ -20,6 +20,11 @@ import (
 var envFile string
 
 var (
+	BuildTime string
+	CommitID  string
+)
+
+var (
 	aospPath       string
 	distbuildPath  string
 	scpPassword    string
@@ -27,8 +32,9 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "bootstrap",
-	Short: "boong bootstrap",
+	Use:     "bootstrap",
+	Short:   "boong bootstrap",
+	Version: BuildTime + "-" + CommitID,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
 		if err := run(ctx); err != nil {
