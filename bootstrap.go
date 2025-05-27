@@ -27,12 +27,14 @@ var (
 var (
 	aospPath      string
 	distbuildPath string
+	deployAgent   bool
 )
 
 var rootCmd = &cobra.Command{
 	Use:     "bootstrap",
 	Short:   "boong bootstrap",
 	Version: BuildTime + "-" + CommitID,
+	PreRunE: preRunCheck,
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
 		if err := run(ctx); err != nil {
@@ -42,13 +44,27 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+func preRunCheck(cmd *cobra.Command, args []string) error {
+	if deployAgent {
+		if distbuildPath == "" {
+			return fmt.Errorf("--distbuild-path is required when using --deploy-agent")
+		}
+	} else {
+		if aospPath == "" {
+			return fmt.Errorf("--aosp-path is required when not using --deploy-agent")
+		}
+		if distbuildPath == "" {
+			return fmt.Errorf("--distbuild-path is required")
+		}
+	}
+	return nil
+}
+
 // nolint:gochecknoinits
 func init() {
 	rootCmd.Flags().StringVar(&aospPath, "aosp-path", "", "AOSP base path")
 	rootCmd.Flags().StringVar(&distbuildPath, "distbuild-path", "", "Distbuild binaries path")
-
-	_ = cobra.MarkFlagRequired(rootCmd.Flags(), "aosp-path")
-	_ = cobra.MarkFlagRequired(rootCmd.Flags(), "distbuild-path")
+	rootCmd.Flags().BoolVar(&deployAgent, "deploy-agent", false, "Only download and run agent")
 
 	rootCmd.Root().CompletionOptions.DisableDefaultCmd = true
 }
@@ -62,6 +78,14 @@ func main() {
 func run(_ context.Context) error {
 	if err := loadEnvFile(envFile); err != nil {
 		return fmt.Errorf("load .env failed: %w", err)
+	}
+
+	if deployAgent {
+		if err := downloadAgent(); err != nil {
+			return fmt.Errorf("download agent failed: %w", err)
+		}
+		fmt.Println("Starting agent in background...")
+		return runAgent()
 	}
 
 	if err := cloneDistbuildRepo(); err != nil {
@@ -126,6 +150,49 @@ func cloneDistbuildRepo() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%v\n%s", err, stderr.String())
 	}
+
+	return nil
+}
+
+func downloadAgent() error {
+	binDir := filepath.Join(distbuildPath, "boong", "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		return fmt.Errorf("create bin directory failed: %w", err)
+	}
+
+	agentBin, exists := os.LookupEnv("AGENT_BIN")
+	if !exists {
+		return fmt.Errorf("environment variable AGENT_BIN not set")
+	}
+
+	return downloadFile(
+		agentBin,
+		filepath.Join(binDir, "agent"),
+	)
+}
+
+func runAgent() error {
+	agentPath := filepath.Join(distbuildPath, "boong", "bin", "agent")
+	cmd := createAgentCommand(agentPath)
+
+	logFile, err := os.Create(filepath.Join(distbuildPath, "agent.log"))
+	if err != nil {
+		return fmt.Errorf("create log file failed: %w", err)
+	}
+
+	defer func(logFile *os.File) {
+		_ = logFile.Close()
+	}(logFile)
+
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("agent startup failed: %w", err)
+	}
+
+	fmt.Printf("Agent started with PID %d\n", cmd.Process.Pid)
+	fmt.Printf("Log output: %s\n", logFile.Name())
 
 	return nil
 }
