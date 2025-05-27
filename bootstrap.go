@@ -25,10 +25,8 @@ var (
 )
 
 var (
-	aospPath       string
-	distbuildPath  string
-	scpPassword    string
-	workerEndpoint string
+	aospPath      string
+	distbuildPath string
 )
 
 var rootCmd = &cobra.Command{
@@ -46,8 +44,6 @@ var rootCmd = &cobra.Command{
 
 // nolint:gochecknoinits
 func init() {
-	rootCmd.Flags().StringVarP(&scpPassword, "password", "p", "userpasswd", "SCP password")
-	rootCmd.Flags().StringVarP(&workerEndpoint, "worker", "w", "user@worker_ip", "Worker endpoint")
 	rootCmd.Flags().StringVar(&aospPath, "aosp-path", "", "AOSP base path")
 	rootCmd.Flags().StringVar(&distbuildPath, "distbuild-path", "", "Distbuild binaries path")
 
@@ -80,10 +76,6 @@ func run(_ context.Context) error {
 		return fmt.Errorf("create symlinks failed: %w", err)
 	}
 
-	if err := transferAgent(); err != nil {
-		return fmt.Errorf("transfer agent failed: %w", err)
-	}
-
 	return nil
 }
 
@@ -113,6 +105,11 @@ func loadEnvFile(content string) error {
 
 func cloneDistbuildRepo() error {
 	targetPath := filepath.Join(aospPath, "build", "distbuild")
+
+	if err := os.RemoveAll(targetPath); err != nil {
+		return fmt.Errorf("failed to remove existing distbuild directory: %w", err)
+	}
+
 	if err := os.MkdirAll(targetPath, 0755); err != nil {
 		return fmt.Errorf("create directory failed: %w", err)
 	}
@@ -249,23 +246,6 @@ func createSymlinks() error {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("proxy symlink failed: %v\n%s", err, stderr.String())
-	}
-
-	return nil
-}
-
-func transferAgent() error {
-	sourcePath := filepath.Join(distbuildPath, "boong", "bin", "agent")
-	cmd := exec.Command("sshpass", "-p", scpPassword, "scp",
-		"-o", "StrictHostKeyChecking=no",
-		sourcePath,
-		fmt.Sprintf("%s:~/", workerEndpoint))
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%v\n%s", err, stderr.String())
 	}
 
 	return nil
