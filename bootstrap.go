@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -35,8 +36,8 @@ var rootCmd = &cobra.Command{
 	Short:   "boong bootstrap",
 	Version: BuildTime + "-" + CommitID,
 	Run: func(cmd *cobra.Command, args []string) {
-		if aospPath == "" && !deployAgent {
-			_, _ = fmt.Fprintln(os.Stderr, "please specify either --aosp-path or --deploy-agent flag")
+		if err := checkFlags(); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "Error:", err.Error())
 			os.Exit(1)
 		}
 		ctx := context.Background()
@@ -74,7 +75,7 @@ func run(_ context.Context) error {
 		if err := downloadAgent(); err != nil {
 			return fmt.Errorf("download agent failed: %w", err)
 		}
-		fmt.Println("Starting agent in background...")
+		fmt.Println("starting agent in background...")
 		return runAgent()
 	}
 
@@ -91,6 +92,47 @@ func run(_ context.Context) error {
 	}
 
 	return nil
+}
+
+func checkFlags() error {
+	var err error
+
+	if aospPath == "" && !deployAgent {
+		return fmt.Errorf("--aosp-path or --deploy-agent flag is required")
+	}
+
+	aospPath, err = expandTildeIfPresent(aospPath)
+	if err != nil {
+		return fmt.Errorf("failed to expand tilde: %w", err)
+	}
+
+	distbuildPath, err = expandTildeIfPresent(distbuildPath)
+	if err != nil {
+		return fmt.Errorf("failed to expand tilde: %w", err)
+	}
+
+	return nil
+}
+
+func expandTildeIfPresent(path string) (string, error) {
+	if !strings.Contains(path, "~") {
+		return path, nil
+	}
+
+	if strings.HasPrefix(path, "~") {
+		usr, err := user.Current()
+		if err != nil {
+			return "", err
+		}
+		if path == "~" {
+			return usr.HomeDir, nil
+		}
+		if strings.HasPrefix(path, "~/") {
+			return filepath.Join(usr.HomeDir, path[2:]), nil
+		}
+	}
+
+	return path, nil
 }
 
 func loadEnvFile(content string) error {
@@ -111,7 +153,11 @@ func loadEnvFile(content string) error {
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
 
-		_ = os.Setenv(key, value)
+		if _, ok := os.LookupEnv(key); !ok {
+			if err := os.Setenv(key, value); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -128,12 +174,18 @@ func cloneDistbuildRepo() error {
 		return fmt.Errorf("create directory failed: %w", err)
 	}
 
-	distbuildRepo, exists := os.LookupEnv("DISTBUILD_REPO")
-	if !exists {
-		return fmt.Errorf("environment variable DISTBUILD_REPO not set")
+	repo, exists := os.LookupEnv("DISTBUILD_REPO")
+	if !exists || repo == "" {
+		repo, exists = os.LookupEnv("WRAPPER_REPO")
+		if !exists || repo == "" {
+			return fmt.Errorf("environment variable DISTBUILD_REPO or WRAPPER_REPO not set")
+		}
+		targetPath = filepath.Join(targetPath, "boong")
+		_ = os.MkdirAll(targetPath, 0755)
+		targetPath = filepath.Join(targetPath, "wrapper")
 	}
 
-	cmd := exec.Command("git", "clone", distbuildRepo, targetPath)
+	cmd := exec.Command("git", "clone", repo, targetPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -151,8 +203,9 @@ func downloadAgent() error {
 	}
 
 	agentBin, exists := os.LookupEnv("AGENT_BIN")
-	if !exists {
-		return fmt.Errorf("environment variable AGENT_BIN not set")
+	if !exists || agentBin == "" {
+		fmt.Println("warning: environment variable AGENT_BIN not set")
+		return nil
 	}
 
 	return downloadFile(
@@ -181,8 +234,8 @@ func runAgent() error {
 		return fmt.Errorf("agent startup failed: %w", err)
 	}
 
-	fmt.Printf("Agent started with PID %d\n", cmd.Process.Pid)
-	fmt.Printf("Log output: %s\n", logFile.Name())
+	fmt.Printf("agent started with PID %d\n", cmd.Process.Pid)
+	fmt.Printf("log output: %s\n", logFile.Name())
 
 	return nil
 }
@@ -194,47 +247,21 @@ func downloadResources() error {
 	}
 
 	proxyBin, exists := os.LookupEnv("PROXY_BIN")
-	if !exists {
-		return fmt.Errorf("environment variable PROXY_BIN not set")
-	}
-
-	agentBin, exists := os.LookupEnv("AGENT_BIN")
-	if !exists {
-		return fmt.Errorf("environment variable AGENT_BIN not set")
+	if exists && proxyBin != "" {
+		if err := downloadFile(proxyBin, filepath.Join(binDir, "proxy")); err != nil {
+			return fmt.Errorf("download proxy binary failed: %w", err)
+		}
+	} else {
+		fmt.Println("warning: environment variable PROXY_BIN not set")
 	}
 
 	distninjaBin, exists := os.LookupEnv("DISTNINJA_BIN")
-	if !exists {
-		return fmt.Errorf("environment variable DISTNINJA_BIN not set")
-	}
-
-	errChan := make(chan error, 3)
-
-	go func() {
-		errChan <- downloadFile(
-			proxyBin,
-			filepath.Join(binDir, "proxy"),
-		)
-	}()
-
-	go func() {
-		errChan <- downloadFile(
-			agentBin,
-			filepath.Join(binDir, "agent"),
-		)
-	}()
-
-	go func() {
-		errChan <- downloadFile(
-			distninjaBin,
-			filepath.Join(binDir, "distninja"),
-		)
-	}()
-
-	for i := 0; i < 3; i++ {
-		if err := <-errChan; err != nil {
-			return err
+	if exists && distninjaBin != "" {
+		if err := downloadFile(distninjaBin, filepath.Join(binDir, "distninja")); err != nil {
+			return fmt.Errorf("download distninja binary failed: %w", err)
 		}
+	} else {
+		fmt.Println("warning: environment variable DISTNINJA_BIN not set")
 	}
 
 	return nil
@@ -246,12 +273,12 @@ func downloadFile(url, filePath string) error {
 		return fmt.Errorf("create request failed: %v [%s]", err, filepath.Base(filePath))
 	}
 
-	username := os.Getenv("DISTBUILD_AUTH_USER")
-	password := os.Getenv("DISTBUILD_AUTH_PASSWORD")
-	if username == "" || password == "" {
-		return fmt.Errorf("environment variables DISTBUILD_AUTH_USER or DISTBUILD_AUTH_PASSWORD not set [%s]", filepath.Base(filePath))
+	username := os.Getenv("AUTH_USER")
+	password := os.Getenv("AUTH_PASS")
+
+	if username != "" && password != "" {
+		req.SetBasicAuth(username, password)
 	}
-	req.SetBasicAuth(username, password)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
