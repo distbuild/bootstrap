@@ -10,7 +10,6 @@ builds:
     goarch:
       - amd64
     dir: .
-    main: bootstrap.go
     binary: bootstrap
     flags:
       - -trimpath

@@ -3,14 +3,14 @@
 package main
 
 import (
-    "os/exec"
-    "syscall"
+	"os/exec"
+	"syscall"
 )
 
 func createAgentCommand(name string) *exec.Cmd {
-    cmd := exec.Command(name)
-    cmd.SysProcAttr = &syscall.SysProcAttr{
-        // Darwin-specific settings if needed
-    }
-    return cmd
+	cmd := exec.Command(name)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		// Darwin-specific settings if needed
+	}
+	return cmd
 }
