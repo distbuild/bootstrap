@@ -34,8 +34,11 @@ var rootCmd = &cobra.Command{
 	Use:     "bootstrap",
 	Short:   "boong bootstrap",
 	Version: BuildTime + "-" + CommitID,
-	PreRunE: preRunCheck,
 	Run: func(cmd *cobra.Command, args []string) {
+		if aospPath == "" && !deployAgent {
+			_, _ = fmt.Fprintln(os.Stderr, "please specify either --aosp-path or --deploy-agent flag")
+			os.Exit(1)
+		}
 		ctx := context.Background()
 		if err := run(ctx); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "Error:", err.Error())
@@ -44,27 +47,14 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-func preRunCheck(cmd *cobra.Command, args []string) error {
-	if deployAgent {
-		if distbuildPath == "" {
-			return fmt.Errorf("--distbuild-path is required when using --deploy-agent")
-		}
-	} else {
-		if aospPath == "" {
-			return fmt.Errorf("--aosp-path is required when not using --deploy-agent")
-		}
-		if distbuildPath == "" {
-			return fmt.Errorf("--distbuild-path is required")
-		}
-	}
-	return nil
-}
-
 // nolint:gochecknoinits
 func init() {
-	rootCmd.Flags().StringVar(&aospPath, "aosp-path", "", "AOSP base path")
-	rootCmd.Flags().StringVar(&distbuildPath, "distbuild-path", "", "Distbuild binaries path")
-	rootCmd.Flags().BoolVar(&deployAgent, "deploy-agent", false, "Only download and run agent")
+	rootCmd.Flags().StringVar(&aospPath, "aosp-path", "", "aosp base path")
+	rootCmd.Flags().StringVar(&distbuildPath, "distbuild-path", "", "distbuild binaries path")
+	rootCmd.Flags().BoolVar(&deployAgent, "deploy-agent", false, "deploy agent service")
+
+	_ = rootCmd.MarkFlagRequired("distbuild-path")
+	rootCmd.MarkFlagsMutuallyExclusive("aosp-path", "deploy-agent")
 
 	rootCmd.Root().CompletionOptions.DisableDefaultCmd = true
 }
