@@ -75,20 +75,21 @@ func run(_ context.Context) error {
 		return fmt.Errorf("load .env failed: %w", err)
 	}
 
-	if deployAgent {
-		if err := downloadAgent(); err != nil {
-			return fmt.Errorf("download agent failed: %w", err)
-		}
-		fmt.Println("starting agent in background...")
-		return runAgent()
-	}
-
 	if err := cloneDistbuildRepo(); err != nil {
 		return fmt.Errorf("git clone failed: %w", err)
 	}
 
 	if err := downloadResources(); err != nil {
 		return fmt.Errorf("download resources failed: %w", err)
+	}
+
+	if deployAgent {
+		if err := downloadAgent(); err != nil {
+			return fmt.Errorf("download agent failed: %w", err)
+		}
+		if err := runAgent(); err != nil {
+			return fmt.Errorf("run agent failed: %w", err)
+		}
 	}
 
 	if enableToolchains {
@@ -255,6 +256,7 @@ func runAgent() error {
 		return fmt.Errorf("agent startup failed: %w", err)
 	}
 
+	fmt.Println("starting agent in background...")
 	fmt.Printf("agent started with PID %d\n", cmd.Process.Pid)
 	fmt.Printf("log output: %s\n", logFile.Name())
 
