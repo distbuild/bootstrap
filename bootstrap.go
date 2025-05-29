@@ -28,9 +28,10 @@ var (
 )
 
 var (
-	aospPath      string
-	distbuildPath string
-	deployAgent   bool
+	aospPath         string
+	distbuildPath    string
+	deployAgent      bool
+	enableToolchains bool
 )
 
 var rootCmd = &cobra.Command{
@@ -55,6 +56,7 @@ func init() {
 	rootCmd.Flags().StringVar(&aospPath, "aosp-path", "", "aosp base path")
 	rootCmd.Flags().StringVar(&distbuildPath, "distbuild-path", "", "distbuild binaries path")
 	rootCmd.Flags().BoolVar(&deployAgent, "deploy-agent", false, "deploy agent service")
+	rootCmd.Flags().BoolVar(&enableToolchains, "enable-toolchains", false, "download prebuilt toolchains")
 
 	_ = rootCmd.MarkFlagRequired("distbuild-path")
 	rootCmd.MarkFlagsMutuallyExclusive("aosp-path", "deploy-agent")
@@ -87,6 +89,12 @@ func run(_ context.Context) error {
 
 	if err := downloadResources(); err != nil {
 		return fmt.Errorf("download resources failed: %w", err)
+	}
+
+	if enableToolchains {
+		if err := downloadToolchains(); err != nil {
+			return fmt.Errorf("download toolchains failed: %w", err)
+		}
 	}
 
 	return nil
@@ -172,6 +180,11 @@ func cloneDistbuildRepo() error {
 		return fmt.Errorf("create directory failed: %w", err)
 	}
 
+	host, exists := os.LookupEnv("REPO_HOST")
+	if !exists || host == "" {
+		return fmt.Errorf("environment variable REPO_HOST not set")
+	}
+
 	repo, exists := os.LookupEnv("DISTBUILD_REPO")
 	if !exists || repo == "" {
 		repo, exists = os.LookupEnv("WRAPPER_REPO")
@@ -188,7 +201,7 @@ func cloneDistbuildRepo() error {
 		_ = stopProgress(bar, done)
 	}(bar, done)
 
-	cmd := exec.Command("git", "clone", repo, targetPath)
+	cmd := exec.Command("git", "clone", fmt.Sprintf("%s/%s", host, repo), targetPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -345,6 +358,63 @@ func createSymlinks(name string) error {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("create symlink failed: %v [%s]", err, filepath.Base(name))
+	}
+
+	return nil
+}
+
+func downloadToolchains() error {
+	host, exists := os.LookupEnv("REPO_HOST")
+	if !exists || host == "" {
+		return fmt.Errorf("environment variable REPO_HOST not set")
+	}
+
+	toolchains := []struct {
+		name string
+		repo string
+		path string
+	}{
+		{
+			name: "clang",
+			repo: fmt.Sprintf("%s/platform/prebuilts/clang/host/linux-x86", host),
+			path: filepath.Join(distbuildPath, "prebuilts/clang/host/linux-x86"),
+		},
+		{
+			name: "gcc",
+			repo: fmt.Sprintf("%s/platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8", host),
+			path: filepath.Join(distbuildPath, "prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8"),
+		},
+	}
+
+	for _, tc := range toolchains {
+		if err := cloneToolchain(tc.repo, tc.path, tc.name); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func cloneToolchain(repo, path, name string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("failed to remove existing %s directory: %w", name, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create directory for %s failed: %w", name, err)
+	}
+
+	bar, done, _ := runProgress(fmt.Sprintf("clone %s...", name))
+	defer func(bar *progressbar.ProgressBar, done chan bool) {
+		_ = stopProgress(bar, done)
+	}(bar, done)
+
+	cmd := exec.Command("git", "clone", repo, "-b", "master", "--depth", "1", path)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s clone failed: %v\n%s", name, err, stderr.String())
 	}
 
 	return nil
