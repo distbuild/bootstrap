@@ -13,7 +13,9 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -85,10 +87,6 @@ func run(_ context.Context) error {
 
 	if err := downloadResources(); err != nil {
 		return fmt.Errorf("download resources failed: %w", err)
-	}
-
-	if err := createSymlinks(); err != nil {
-		return fmt.Errorf("create symlinks failed: %w", err)
 	}
 
 	return nil
@@ -185,6 +183,11 @@ func cloneDistbuildRepo() error {
 		targetPath = filepath.Join(targetPath, "wrapper")
 	}
 
+	bar, done, _ := runProgress("clone repo...")
+	defer func(bar *progressbar.ProgressBar, done chan bool) {
+		_ = stopProgress(bar, done)
+	}(bar, done)
+
 	cmd := exec.Command("git", "clone", repo, targetPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -207,6 +210,11 @@ func downloadAgent() error {
 		fmt.Println("warning: environment variable AGENT_BIN not set")
 		return nil
 	}
+
+	bar, done, _ := runProgress("download agent...")
+	defer func(bar *progressbar.ProgressBar, done chan bool) {
+		_ = stopProgress(bar, done)
+	}(bar, done)
 
 	return downloadFile(
 		agentBin,
@@ -248,8 +256,15 @@ func downloadResources() error {
 
 	proxyBin, exists := os.LookupEnv("PROXY_BIN")
 	if exists && proxyBin != "" {
+		bar, done, _ := runProgress("download proxy...")
+		defer func(bar *progressbar.ProgressBar, done chan bool) {
+			_ = stopProgress(bar, done)
+		}(bar, done)
 		if err := downloadFile(proxyBin, filepath.Join(binDir, "proxy")); err != nil {
 			return fmt.Errorf("download proxy binary failed: %w", err)
+		}
+		if err := createSymlinks("proxy"); err != nil {
+			return fmt.Errorf("create symlinks failed: %w", err)
 		}
 	} else {
 		fmt.Println("warning: environment variable PROXY_BIN not set")
@@ -257,8 +272,15 @@ func downloadResources() error {
 
 	distninjaBin, exists := os.LookupEnv("DISTNINJA_BIN")
 	if exists && distninjaBin != "" {
+		bar, done, _ := runProgress("download distninja...")
+		defer func(bar *progressbar.ProgressBar, done chan bool) {
+			_ = stopProgress(bar, done)
+		}(bar, done)
 		if err := downloadFile(distninjaBin, filepath.Join(binDir, "distninja")); err != nil {
 			return fmt.Errorf("download distninja binary failed: %w", err)
+		}
+		if err := createSymlinks("distninja"); err != nil {
+			return fmt.Errorf("create symlinks failed: %w", err)
 		}
 	} else {
 		fmt.Println("warning: environment variable DISTNINJA_BIN not set")
@@ -314,23 +336,54 @@ func downloadFile(url, filePath string) error {
 	return nil
 }
 
-func createSymlinks() error {
-	distninjaSrc := filepath.Join(distbuildPath, "boong", "bin", "distninja")
-	proxySrc := filepath.Join(distbuildPath, "boong", "bin", "proxy")
+func createSymlinks(name string) error {
+	source := filepath.Join(distbuildPath, "boong", "bin", name)
+	target := filepath.Join("/usr/local/bin", name)
 
-	cmd := exec.Command("sudo", "ln", "-sf", distninjaSrc, "/usr/local/bin/distninja")
+	cmd := exec.Command("sudo", "ln", "-sf", source, target)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("distninja symlink failed: %v\n%s", err, stderr.String())
-	}
-
-	cmd = exec.Command("sudo", "ln", "-sf", proxySrc, "/usr/local/bin/proxy")
-	stderr.Reset()
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("proxy symlink failed: %v\n%s", err, stderr.String())
+		return fmt.Errorf("create symlink failed: %v [%s]", err, filepath.Base(name))
 	}
 
 	return nil
+}
+
+func runProgress(description string) (*progressbar.ProgressBar, chan bool, error) {
+	bar := progressbar.NewOptions(-1,
+		progressbar.OptionSetDescription(description),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "=",
+			SaucerHead:    ">",
+			SaucerPadding: "",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+		progressbar.OptionOnCompletion(func() {
+			fmt.Println("")
+		}),
+	)
+
+	done := make(chan bool)
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = bar.Add(1)
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}()
+
+	return bar, done, nil
+}
+
+func stopProgress(bar *progressbar.ProgressBar, done chan bool) error {
+	done <- true
+
+	return bar.Finish()
 }
