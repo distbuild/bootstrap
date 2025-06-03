@@ -22,6 +22,9 @@ import (
 //go:embed .env
 var envFile string
 
+//go:embed distbuild.service
+var agentServiceFile string
+
 var (
 	BuildTime string
 	CommitID  string
@@ -87,14 +90,72 @@ func run(_ context.Context) error {
 		if err := downloadAgent(); err != nil {
 			return fmt.Errorf("download agent failed: %w", err)
 		}
-		if err := runAgent(); err != nil {
-			return fmt.Errorf("run agent failed: %w", err)
+		if err := installAgentService(); err != nil {
+			return fmt.Errorf("install agent service failed: %w", err)
 		}
+		fmt.Println()
+		fmt.Println("agent service installed and started successfully!")
+		fmt.Println("check status: sudo systemctl status distbuild.service")
+		fmt.Println()
 	}
 
 	if enableToolchains {
 		if err := downloadToolchains(); err != nil {
 			return fmt.Errorf("download toolchains failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func installAgentService() error {
+	servicePath := "/etc/systemd/system/distbuild.service"
+	agentSource := filepath.Join(distbuildPath, "boong", "bin", "agent")
+	agentTarget := "/usr/local/bin/distbuild-agent"
+
+	bar, done, _ := runProgress("installing agent service...")
+	defer func() { _ = stopProgress(bar, done) }()
+
+	if err := exec.Command("sudo", "mkdir", "-p", "/usr/local/bin").Run(); err != nil {
+		return fmt.Errorf("create bin directory failed: %w", err)
+	}
+
+	if err := exec.Command("sudo", "mv", agentSource, agentTarget).Run(); err != nil {
+		return fmt.Errorf("move agent failed: %w", err)
+	}
+
+	tempFile, err := os.CreateTemp("", "distbuild-service-*.service")
+	if err != nil {
+		return fmt.Errorf("create temp file failed: %w", err)
+	}
+
+	defer func(name string) {
+		_ = os.Remove(name)
+	}(tempFile.Name())
+
+	if _, err := tempFile.WriteString(agentServiceFile); err != nil {
+		return fmt.Errorf("write service file failed: %w", err)
+	}
+
+	defer func(tempFile *os.File) {
+		_ = tempFile.Close()
+	}(tempFile)
+
+	moveCmd := exec.Command("sudo", "mv", tempFile.Name(), servicePath)
+	if err := moveCmd.Run(); err != nil {
+		return fmt.Errorf("install service file failed: %w", err)
+	}
+
+	commands := []*exec.Cmd{
+		exec.Command("sudo", "systemctl", "daemon-reload"),
+		exec.Command("sudo", "systemctl", "enable", "distbuild.service"),
+		exec.Command("sudo", "systemctl", "start", "distbuild.service"),
+	}
+
+	for _, cmd := range commands {
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("command failed [%s]: %w\n%s",
+				strings.Join(cmd.Args, " "), err, string(output))
 		}
 	}
 
@@ -234,33 +295,6 @@ func downloadAgent() error {
 		agentBin,
 		filepath.Join(binDir, "agent"),
 	)
-}
-
-func runAgent() error {
-	agentPath := filepath.Join(distbuildPath, "boong", "bin", "agent")
-	cmd := createAgentCommand(agentPath)
-
-	logFile, err := os.Create(filepath.Join(distbuildPath, "agent.log"))
-	if err != nil {
-		return fmt.Errorf("create log file failed: %w", err)
-	}
-
-	defer func(logFile *os.File) {
-		_ = logFile.Close()
-	}(logFile)
-
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("agent startup failed: %w", err)
-	}
-
-	fmt.Println("starting agent in background...")
-	fmt.Printf("agent started with PID %d\n", cmd.Process.Pid)
-	fmt.Printf("log output: %s\n", logFile.Name())
-
-	return nil
 }
 
 func downloadResources() error {
